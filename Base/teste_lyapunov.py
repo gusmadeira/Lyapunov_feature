@@ -23,6 +23,7 @@ except FileNotFoundError:
 alpha=float(parameter.get('alpha', 1e-3)) 
 Trot=float(parameter.get('Trot', 10.)) 
 save_xy=int(parameter.get('save_xy', 0)) 
+central=int(parameter.get('central', 1)) 
 
 ############ Values (S.I.) ##############
 G=6.6743e-11 
@@ -35,7 +36,8 @@ wk=np.sqrt(G*MT/R**3.)
 Trot=Trot*60.*60. 
 w=2.*np.pi/Trot
 rejec=float(parameter.get('rejec', 100.)) 
-
+J2=float(parameter.get('J2', 0.0)) 
+C22=float(parameter.get('C22', 0.0)) 
 ############ Values (normalized) ##############
 Gn=1.0
 mu=M2/MT 
@@ -77,12 +79,28 @@ def r_to_b2(XV):
     r_n=np.sqrt(x_n**2.+y_n**2.)
     return [x_n,y_n,r_n]
 
-def force(t,XVl):    
+def force_anomaly(t,XVl):    
     x,y,vx,vy=XVl
     xn1,yn1,r1=r_to_b1(XVl)
     xn2,yn2,r2=r_to_b2(XVl)
     Fx=xn1/r1**3.+alpha*xn2/r2**3.
     Fy=yn1/r1**3.+alpha*yn2/r2**3.
+    return[Fx,Fy]    
+
+def force_ellipsoid(t,XVl):
+# IMPLEMENTAR AQUI O ELIPSOIDE    
+    x,y,vx,vy=XVl
+    xn1,yn1,r1=r_to_b1(XVl)
+    xn2,yn2,r2=r_to_b2(XVl)
+    Fx=xn1/r1**3.+alpha*xn2/r2**3.
+    Fy=yn1/r1**3.+alpha*yn2/r2**3.
+    return[Fx,Fy]    
+
+def force(t,XVl):    
+    if central ==1:
+        Fx,Fy=force_anomaly(t,XVl)
+    if central ==2:
+        Fx,Fy=force_ellipsoid(t,XVl)
     return[Fx,Fy]    
 
 def eqmotion(t, XVl):                   
@@ -115,6 +133,8 @@ def jacobian_force_components(XVl):
     dFy_dx = dFx_dy 
     dFy_dy = (1./r1_3 - 3.*yn1**2./r1_5) + alpha * (1./r2_3 - 3.*yn2**2./r2_5)
     
+    # IMPLEMENTAR O ELIPSOIDE
+    
     return dFx_dx, dFx_dy, dFy_dx, dFy_dy
 
 def eqmotion_with_lyap(t, Y):
@@ -136,19 +156,6 @@ def eqmotion_with_lyap(t, Y):
 # -------------------------------------------------------------------
 # Eventos
 # -------------------------------------------------------------------
-def col1(t, Y):
-    x,y,vx,vy = Y[0:4] 
-    xn1,yn1,r1=r_to_b1([x,y,vx,vy])
-    return r1-Rn
-
-def ejecao(t, Y):
-    x,y,vx,vy = Y[0:4]
-    r=np.sqrt(x**2.+y**2.)  
-    return r-rejec
-
-col1.terminal = True
-ejecao.terminal = True
-
 def rotacional_para_inercial(t, x, y, z, vx, vy, vz, n):
     cos_nt = np.cos(n * t)
     sin_nt = np.sin(n * t)
@@ -160,6 +167,40 @@ def rotacional_para_inercial(t, x, y, z, vx, vy, vz, n):
     VZ = vz
     return X, Y, Z, VX, VY, VZ
 
+def col1(t, Y):
+    x,y,vx,vy = Y[0:4] 
+    xn1,yn1,r1=r_to_b1([x,y,vx,vy])
+    return r1-Rn
+
+def col2(t, Y):
+    x,y,vx,vy = Y[0:4] 
+    r = np.sqrt(x**2.+y**2.)
+    return r-Rn
+
+def parabolic(t, Y):
+    x,y,vx,vy = Y[0:4] 
+    z = 0.*x
+    vz = 0.*vx
+#   adicionar aqui a rotina de conversao    
+    X,Y,Z,VX,VY,VZ = rotacional_para_inercial(t, x, y, z, vx, vy, vz, lbd)
+    r = np.sqrt(X**2.+Y**2.)
+    hz = VY*X-Y*VX
+    a = (2./r - (VX**2.+VY**2.)/(Gn*(1.+mu)))**(-1.)
+    e = 1 - hz*hz/(Gn*(1.+mu)*a)
+    e = np.sqrt(e) if e >= 0 else -1.0 
+    return r-1.0
+
+def ejecao(t, Y):
+    x,y,vx,vy = Y[0:4]
+    r=np.sqrt(x**2.+y**2.)  
+    return r-rejec
+
+col1.terminal = True
+col2.terminal = True
+parabolic.terminal = True
+ejecao.terminal = True
+
+
 # -------------------------------------------------------------------
 # Integrador
 # -------------------------------------------------------------------
@@ -168,7 +209,7 @@ def orbita(XV0, time):
     w0_norm = np.linalg.norm(w0)
     Y0 = np.concatenate((XV0, w0)) 
 
-    sol = solve_ivp(eqmotion_with_lyap, [time[0], time[-1]], Y0, t_eval=time, method='RK45', rtol=1e-8, atol=1e-8, events=[col1, ejecao])
+    sol = solve_ivp(eqmotion_with_lyap, [time[0], time[-1]], Y0, t_eval=time, method='RK45', rtol=1e-8, atol=1e-8, events=[col1, ejecao, col2, parabolic])
 
     t = sol.t
     x,y,vx,vy = sol.y[0:4]
@@ -186,8 +227,8 @@ def orbita(XV0, time):
     
     lyap_final = lyap_t[-1]
     
-    tcol,tejecao = sol.t_events
-    Ycol,Yejecao = sol.t_events 
+    tcol,tejecao, tcol2, tejecao2 = sol.t_events
+    Ycol,Yejecao, Ycol2, Yejecao2 = sol.t_events 
 
     col=0
     collision_string = None
@@ -204,6 +245,19 @@ def orbita(XV0, time):
         Ye = Yejecao[0]
         collision_string = "{} {} {} {} {} {} {} {}\n".format(
             XV0[0], XV0[3], col, tejecao[0], Ye[0], Ye[1], Ye[2], Ye[3]
+        )
+    elif len(tcol2)>0:
+        col=1
+        Yc = Ycol2[0] 
+        # Usando .format para seguranca
+        collision_string = "{} {} {} {} {} {} {} {}\n".format(
+            XV0[0], XV0[3], col, tcol2[0], Yc[0], Yc[1], Yc[2], Yc[3]
+        )
+    elif len(tejecao2)>0:
+        col=2
+        Ye = Yejecao2[0]
+        collision_string = "{} {} {} {} {} {} {} {}\n".format(
+            XV0[0], XV0[3], col, tejecao2[0], Ye[0], Ye[1], Ye[2], Ye[3]
         )
         
     X,Y,Z,VX,VY,VZ = rotacional_para_inercial(t[-1], x[-1], y[-1], 0, vx[-1], vy[-1], 0, lbd)
