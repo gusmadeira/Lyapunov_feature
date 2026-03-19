@@ -24,6 +24,7 @@ alpha=float(parameter.get('alpha', 1e-3))
 Trot=float(parameter.get('Trot', 10.)) 
 save_xy=int(parameter.get('save_xy', 0)) 
 central=int(parameter.get('central', 1)) 
+distribution=int(parameter.get('distribution', 1)) 
 
 ############ Values (S.I.) ##############
 G=6.6743e-11 
@@ -61,9 +62,13 @@ e_end=float(parameter.get('e_end', 0.5))
 varpi=float(parameter.get('varpi', 0.0))
 varpi = varpi *np.pi/180.
 Npart=int(parameter.get('Npart', 10)) 
-a_vec=np.linspace(a_init,a_end+1e-6,Npart) 
-e_vec=np.linspace(e_init,e_end,Npart) 
 
+if distribution==1:
+    a_vec=np.linspace(a_init,a_end+1e-6,Npart) 
+    e_vec=np.linspace(e_init,e_end,Npart) 
+elif distribution==2:
+    a_vec = np.random.uniform(a_init, a_end, Npart)
+    e_vec = np.random.uniform(e_init, e_end, Npart)
 # -------------------------------------------------------------------
 # Funções de movimento
 # -------------------------------------------------------------------
