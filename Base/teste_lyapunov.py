@@ -440,6 +440,11 @@ def run_simulation(indices):
     i, j = indices 
     a = a_vec[i]
     e = e_vec[j]
+    if distribution==2:
+        a = np.random.uniform(a_init, a_end, 1)[0]
+        e = np.random.uniform(e_init, e_end, 1)[0]
+    delta_a = 0.0  # ou np.nan
+    delta_e = 0.0  # ou np.nan
     XYZ = aei_to_xv2(Gn,1.0, mu, [a,e,0.,varpi,0.,0.])
     X0, Y0, Z0, VX0, VY0, VZ0 = XYZ[0]
     x0, y0, z0, vx0, vy0, vz0 = inercial_para_rotacional(0.,X0, Y0, Z0, VX0, VY0, VZ0, lbd)    
