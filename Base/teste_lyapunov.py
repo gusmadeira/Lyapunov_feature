@@ -58,6 +58,8 @@ a_init=float(parameter.get('a_init', 2.0))
 a_end=float(parameter.get('a_end', 4.0))
 e_init=float(parameter.get('e_init', 1e-4))
 e_end=float(parameter.get('e_end', 0.5))
+varpi=float(parameter.get('varpi', 0.0))
+varpi = varpi *np.pi/180.
 Npart=int(parameter.get('Npart', 10)) 
 a_vec=np.linspace(a_init,a_end+1e-6,Npart) 
 e_vec=np.linspace(e_init,e_end,Npart) 
@@ -154,8 +156,13 @@ def eqmotion_with_lyap(t, Y):
     return np.concatenate((d_XVl, d_w))
 
 # -------------------------------------------------------------------
-# Eventos
+# Conversões
 # -------------------------------------------------------------------
+def angle_mod(angle, interval = 2*np.pi):
+  if (angle > interval): angle = angle % interval
+  if (angle < 0): angle = angle + interval
+  return angle
+
 def rotacional_para_inercial(t, x, y, z, vx, vy, vz, n):
     cos_nt = np.cos(n * t)
     sin_nt = np.sin(n * t)
@@ -166,6 +173,143 @@ def rotacional_para_inercial(t, x, y, z, vx, vy, vz, n):
     VY = sin_nt * (vx - n * y) + cos_nt * (vy + n * x)
     VZ = vz
     return X, Y, Z, VX, VY, VZ
+
+def inercial_para_rotacional(t, X, Y, Z, VX, VY, VZ, n):
+    cos_nt = np.cos(n * t)
+    sin_nt = np.sin(n * t)
+    x = cos_nt * X + sin_nt * Y
+    y = - sin_nt * X + cos_nt * Y
+    z = Z
+    vx = cos_nt * VX + sin_nt * VY + n * y
+    vy = - sin_nt * VX + cos_nt * VY - n * x
+    vz = VZ
+    return x, y, z, vx, vy, vz
+
+
+def xv_to_aei(G,m_0,m,xyz):
+  x = xyz[0]
+  y = xyz[1]
+  z = xyz[2]
+  vx = xyz[3]
+  vy = xyz[4]
+  vz = xyz[5]
+  
+  hx = y*vz-z*vy
+  hy = z*vx-x*vz
+  hz = x*vy-y*vx
+  h2 = hx**2+hy**2+hz**2
+  r2 = x**2+y**2+z**2
+  v2 = vx**2+vy**2+vz**2
+  rv = x*vx  +  y*vy  +  z*vz
+  
+  # semieixo maior
+  a_aux = 2./(r2)**(.5) - v2/((m+m_0)*G)
+  a = 1./a_aux
+  
+  # excentricidade
+  e_aux = h2/((m+m_0)*G*a)
+  e = (1.-e_aux)**(.5)
+  
+  #e2
+  gm = G*(m+m_0)
+  s = h2 / gm
+  temp = 1.e0  +  s * (v2 / gm  -  2.e0 / r2**.5)
+  e2 = np.sqrt(temp)
+  #print (e,e2)
+  
+  # inclinação
+  cosi = hz/h2**(.5)
+  i = np.arccos(cosi) #rad
+  
+  # longitude do nodo
+  if (abs(cosi) < 1):
+    omega = np.atan2(hx,-hy)
+    omega = angle_mod(omega)
+  else:
+    omega = 0
+  
+  # anomalia verdadeira
+  cosf = (a*(1-e**2)/r2**.5-1)/e
+  if (abs(cosf) > 1): cosf = 1
+  f = np.arccos(cosf)
+  
+  # anomalia verdadeira + argumento do pericentro
+  if (i != 0):
+    sin_f_plus_g = z/((r2**.5)*np.sin(i))
+    f_plus_g = np.arcsin(sin_f_plus_g)
+  else:
+    f_plus_g = f
+  
+  # argumento do pericentro
+  g = f_plus_g - f
+  g = angle_mod(g)
+  
+  # anomalia excêntrica
+  cosE = (a-r2**.5)/(a*e)
+  if (abs(cosE) > 1): cosE = 1
+  E = np.arccos(cosE)
+  
+  # anomalia média
+  if (rv < 0): E = 2*np.pi-E
+  M = E - e*np.sin(E)
+  M = angle_mod(M)
+  
+  aei = [a,e,i,g,omega,M]
+  return (aei)
+  
+def aei_to_xv2(G,m_0,m,aei):
+  #Semieixo maior
+  a = aei[0]
+  #Excentricidade
+  e = aei[1]
+  #Inclinação(rad)
+  i = aei[2]
+  #Argumento do Pericentro(rad)
+  g = aei[3]
+  #Nodo(rad)
+  omega = aei[4]
+  #anomalia verdadeira(f)
+  f = aei[5]
+  
+  #Calculando movimento médio
+  mu = G*(m_0 + m)
+  n = np.sqrt(mu/(a**3))
+
+  #Calculando a distância radial (eq. 2.20)e
+  r = (a*(1 - e**2))/(1 + e*np.cos(f))
+
+  #Calculando dr/dt (eq. 2.31)
+  #dr_dt = (n*a/np.sqrt(1 - e**2))*e*np.sin(f)
+
+  #Matriz P1 (eq. 2.119)
+  P1 = np.array([[np.cos(g), -np.sin(g), 0],
+  [np.sin(g), np.cos(g), 0],
+  [0, 0, 1]])
+
+  #Matriz P2 (eq. 2.119)
+  P2 = np.array([[1, 0, 0],
+  [0, np.cos(i), -np.sin(i)],
+  [0, np.sin(i), np.cos(i)]])
+
+  #Matriz P3 (eq. 2.120)
+  P3 = np.array([[np.cos(omega), -np.sin(omega), 0],
+  [np.sin(omega), np.cos(omega), 0],
+  [0, 0, 1]])
+
+  #-----Calculando a posição do corpo (eq. 2.122)
+  A = np.array([[r*np.cos(f)],[r*np.sin(f)],[0]])
+  Pos = np.matmul(np.matmul(np.matmul(P3,P2),P1),A)
+
+  #-----Calculando a velocidade do corpo
+  B = np.array([[-n*a*np.sin(f)/np.sqrt(1 - e**2)],[n*a*(e + np.cos(f))/np.sqrt(1 - e**2)],[0]])
+  Vel = np.matmul(np.matmul(np.matmul(P3,P2),P1),B)
+  
+  xyz = np.concatenate((Pos, Vel)).transpose()
+  return (xyz)
+
+# -------------------------------------------------------------------
+# Eventos
+# -------------------------------------------------------------------
 
 def col1(t, Y):
     x,y,vx,vy = Y[0:4] 
@@ -184,11 +328,13 @@ def parabolic(t, Y):
 #   adicionar aqui a rotina de conversao    
     X,Y,Z,VX,VY,VZ = rotacional_para_inercial(t, x, y, z, vx, vy, vz, lbd)
     r = np.sqrt(X**2.+Y**2.)
-    hz = VY*X-Y*VX
-    a = (2./r - (VX**2.+VY**2.)/(Gn*(1.+mu)))**(-1.)
-    e = 1 - hz*hz/(Gn*(1.+mu)*a)
-    e = np.sqrt(e) if e >= 0 else -1.0 
-    return r-1.0
+    C =  (VX**2.+VY**2.)/2. - Gn*(1.+mu)/r
+#    r = np.sqrt(X**2.+Y**2.)
+#    hz = VY*X-Y*VX
+#    a = (2./r - (VX**2.+VY**2.)/(Gn*(1.+mu)))**(-1.)
+#    e = 1 - hz*hz/(Gn*(1.+mu)*a)
+#    e = np.sqrt(e) if e >= 0 else -1.0 
+    return C-0.0
 
 def ejecao(t, Y):
     x,y,vx,vy = Y[0:4]
@@ -289,7 +435,9 @@ def run_simulation(indices):
     i, j = indices 
     a = a_vec[i]
     e = e_vec[j]
-    x0 = a*(1.+e)
+    XYZ = aei_to_xv2(Gn,1.0, mu, [a,e,0.,varpi,0.,0.])
+    X0, Y0, Z0, VX0, VY0, VZ0 = XYZ[0]
+    x0, y0, z0, vx0, vy0, vz0 = inercial_para_rotacional(0.,X0, Y0, Z0, VX0, VY0, VZ0, lbd)    
     
     # Protecao n
     try:
@@ -304,11 +452,30 @@ def run_simulation(indices):
     # Logica de seguranca e colisao NaN
     try:
         if x0 > Rn and n > 0:
-            vy0 = n*a*np.sqrt((1.-e)/(1.+e)) - lbd*x0
-            XV0 = [x0, 0., 0., vy0]
+            XV0 = [x0, y0, vx0, vy0]
             
             tf, col, af, ef, lyap_final, full_trajectory, col_str = orbita(XV0, time)
             collision_string = col_str
+            
+            t = full_trajectory[:,0]
+            x = full_trajectory[:,1]
+            y = full_trajectory[:,2]
+            vx = full_trajectory[:,3]
+            vy = full_trajectory[:,4]
+            z = x *0.
+            vz = vx * 0.
+            X, Y, Z, VX, VY, VZ = rotacional_para_inercial(t, x, y, z, vx, vy, vz, lbd)
+
+            a_evol = []
+            e_evol = []
+            # Laço para calcular os elementos orbitais linha por linha
+            for k in range(len(t)):
+                xyz_k = [X[k], Y[k], Z[k], VX[k], VY[k], VZ[k]]
+                aei_k = xv_to_aei(Gn, 1.0, mu, xyz_k)
+                a_evol.append(aei_k[0])
+                e_evol.append(aei_k[1])
+            delta_a = max(a_evol)-min(a_evol)
+            delta_e = max(e_evol)-min(e_evol)
             
             # --- SALVAR TRAJETORIA (OPCIONAL) ---
             if save_xy == 1:
@@ -332,12 +499,14 @@ def run_simulation(indices):
         tf = 0.
         col = 1
         af = a; ef = e
+        delta_a = 0.
+        delta_e = 0.
         lyap_final = np.nan
         print_string = f"Erro em a={a:.4f} e={e:.4f}: {ex}"
 
     # Formatacao segura
-    particle_string = "{:.6f} {:.6f} {:.4f} {} {:.6f} {:.6f} {:.6e}\n".format(
-        a, e, tf, int(col), af, ef, lyap_final
+    particle_string = "{:.6f} {:.6f} {:.4f} {} {:.6f} {:.6f} {:.6e} {:.6f} {:.6e}\n".format(
+        a, e, tf, int(col), af, ef, lyap_final, delta_a, delta_e
     )
     
     # Reduzindo prints para nao lotar log do cluster
