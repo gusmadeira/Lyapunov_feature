@@ -473,7 +473,6 @@ def run_simulation(indices):
 
             a_evol = []
             e_evol = []
-            print(a_evol)
             # Laço para calcular os elementos orbitais linha por linha
             for k in range(len(t)):
                 xyz_k = [X[k], Y[k], Z[k], VX[k], VY[k], VZ[k]]
@@ -519,8 +518,6 @@ def run_simulation(indices):
     if print_string: print(print_string)
         
     return particle_string, collision_string, ""
-
-
 
 # -------------------------------------------------------------------
 # Bloco Principal com CHECKPOINT (Resume de onde parou)
