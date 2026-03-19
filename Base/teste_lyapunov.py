@@ -8,7 +8,7 @@ from itertools import product
 import sys
 
 # -------------------------------------------------------------------
-# Carregar par‚metros do input.ini
+# Carregar par√¢metros do input.ini
 # -------------------------------------------------------------------
 parameter = {}
 try:
@@ -61,7 +61,7 @@ a_vec=np.linspace(a_init,a_end+1e-6,Npart)
 e_vec=np.linspace(e_init,e_end,Npart) 
 
 # -------------------------------------------------------------------
-# FunÁıes de movimento
+# Fun√ß√µes de movimento
 # -------------------------------------------------------------------
 def r_to_b1(XV):    
     x,y,vx,vy=XV
@@ -95,7 +95,7 @@ def eqmotion(t, XVl):
     return [xdot,ydot,vxdot,vydot]  
 
 # -------------------------------------------------------------------
-# FunÁıes Lyapunov
+# Fun√ß√µes Lyapunov
 # -------------------------------------------------------------------
 def jacobian_force_components(XVl):
     x,y,vx,vy=XVl
@@ -296,7 +296,7 @@ def run_simulation(indices):
 # -------------------------------------------------------------------
 if __name__ == "__main__":
 
-    # ConfiguraÁıes de arquivos
+    # Configura√ß√µes de arquivos
     file_part = "particles.txt"
     file_col = "colisao.txt"
     traj_dir = "trajectories"
@@ -320,8 +320,8 @@ if __name__ == "__main__":
                     continue
                 try:
                     parts = line.split()
-                    # Lemos 'a' e 'e' e arredondamos para 6 casas (mesma formataÁ„o da saida)
-                    # para garantir que a comparaÁ„o funcione
+                    # Lemos 'a' e 'e' e arredondamos para 6 casas (mesma formata√ß√£o da saida)
+                    # para garantir que a compara√ß√£o funcione
                     a_done = round(float(parts[0]), 6)
                     e_done = round(float(parts[1]), 6)
                     processed_pairs.add((a_done, e_done))
@@ -331,13 +331,13 @@ if __name__ == "__main__":
         print(f"Encontradas {len(processed_pairs)} particulas ja processadas.")
 
     # --- PASSO 2: Preparar arquivos ---
-    # Se for 'w' (comeÁar do zero), escreve o cabeÁalho.
-    # Se for 'a' (resumir), n„o escreve cabeÁalho de novo.
+    # Se for 'w' (come√ßar do zero), escreve o cabe√ßalho.
+    # Se for 'a' (resumir), n√£o escreve cabe√ßalho de novo.
     if mode == 'w':
         with open(file_part, "w", encoding='utf-8') as s:
             s.write("# a e tf col af ef lyapunov_final\n")
         with open(file_col, 'w', encoding='utf-8') as f:
-            pass # Limpa arquivo de colis„o
+            pass # Limpa arquivo de colis√£o
 
     # --- PASSO 3: Filtrar o Grid ---
     full_indices_grid = list(product(range(Npart), range(Npart)))
@@ -348,7 +348,7 @@ if __name__ == "__main__":
         a_val = round(a_vec[i], 6)
         e_val = round(e_vec[j], 6)
         
-        # Se esse par (a,e) N√O estiver no set de processados, adiciona na fila
+        # Se esse par (a,e) N√ÉO estiver no set de processados, adiciona na fila
         if (a_val, e_val) not in processed_pairs:
             tasks_to_run.append(idx)
 
@@ -379,7 +379,7 @@ if __name__ == "__main__":
                 if p_str: f_part.write(p_str)
                 if c_str: f_col.write(c_str)
                 
-                # ForÁar escrita no disco a cada resultado (flush) para garantir
+                # For√ßar escrita no disco a cada resultado (flush) para garantir
                 # que se cair a luz agora, a linha esteja salva.
                 f_part.flush()
                 f_col.flush()
@@ -388,4 +388,4 @@ if __name__ == "__main__":
                 if count % 10 == 0: # Feedback mais frequente para teste
                     print(f"Progresso atual: {count}/{total_tasks} (Total acumulado: {len(processed_pairs)+count})")
         
-        print(f"Simulacao concluida.")
+        print(f"Simulacao concluida!")
