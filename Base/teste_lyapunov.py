@@ -6,6 +6,8 @@ import os
 import pathlib
 from itertools import product
 import sys
+from numpy.random import default_rng
+import time
 
 # -------------------------------------------------------------------
 # Carregar parâmetros do input.ini
@@ -47,6 +49,11 @@ asinc=((G*M1/w**2.)**(1./3.))/R
 lbd=w/wk
 x1,y1=-mu,0.
 x2,y2=Rn-mu,0.
+
+#if mu<0 and alpha>0:
+#    alpha = -alpha
+#elif mu>0 and alpha<0:
+#    alpha = -alpha
 
 ############ Initial conditions (time) ##############
 Norb=int(parameter.get('Norb', 1000)) 
@@ -318,8 +325,16 @@ def aei_to_xv2(G,m_0,m,aei):
 
 def col1(t, Y):
     x,y,vx,vy = Y[0:4] 
-    xn1,yn1,r1=r_to_b1([x,y,vx,vy])
-    return r1-Rn
+    z = 0.*x
+    vz = 0.*vx
+    X,Y,Z,VX,VY,VZ = rotacional_para_inercial(t, x, y, z, vx, vy, vz, lbd)
+    r = np.sqrt(X**2.+Y**2.)
+    hz = VY*X-Y*VX
+    a = (2./r - (VX**2.+VY**2.)/(Gn*(1.+mu)))**(-1.)
+    e = 1 - hz*hz/(Gn*(1.+mu)*a)
+    e = np.sqrt(e) if e >= 0 else -1.0 
+    q = a * (1-e)
+    return q-Rn
 
 def col2(t, Y):
     x,y,vx,vy = Y[0:4] 
@@ -355,80 +370,182 @@ ejecao.terminal = True
 # -------------------------------------------------------------------
 # Integrador
 # -------------------------------------------------------------------
+
+def safe_norm(vec):
+    vec = np.asarray(vec, dtype=float)
+    if not np.all(np.isfinite(vec)):
+        return np.nan
+    scale = np.max(np.abs(vec))
+    if scale == 0:
+        return 0.0
+    return scale * np.sqrt(np.sum((vec/scale)**2))
+
 def orbita(XV0, time):
-    w0 = np.array([1.0, 0.0, 0.0, 0.0])
-    w0_norm = np.linalg.norm(w0)
-    Y0 = np.concatenate((XV0, w0)) 
+    # -----------------------------
+    # Configuração do Lyapunov
+    # -----------------------------
+    w0 = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    w0_norm = safe_norm(w0)
 
-    sol = solve_ivp(eqmotion_with_lyap, [time[0], time[-1]], Y0, t_eval=time, method='RK45', rtol=1e-8, atol=1e-8, events=[col1, ejecao, col2, parabolic])
+    # tamanho do bloco de renormalização
+    # podes ajustar; 5 a 20 órbitas costuma funcionar bem
+    block_size = 10.0 * 2.0 * np.pi
 
-    t = sol.t
-    x,y,vx,vy = sol.y[0:4]
-    w_vec = sol.y[4:8]     
+    # estado inicial completo
+    Y_current = np.concatenate((np.asarray(XV0, dtype=float), w0))
 
-    w_norm = np.linalg.norm(w_vec, axis=0)
-    lyap_t = np.zeros_like(t)
-    
-    if len(t) > 1:
-        non_zero_t = t[1:] > 0
-        safe_w_norm = w_norm[1:][non_zero_t]
-        safe_t = t[1:][non_zero_t]
-        if safe_w_norm.size > 0:
-             lyap_t[1:][non_zero_t] = (1.0 / safe_t) * np.log(safe_w_norm / w0_norm)
-    
-    lyap_final = lyap_t[-1]
-    
-    tcol,tejecao, tcol2, tejecao2 = sol.t_events
-    Ycol,Yejecao, Ycol2, Yejecao2 = sol.t_events 
+    t0 = float(time[0])
+    tfinal = float(time[-1])
 
-    col=0
+    # acumuladores
+    log_sum = 0.0
+    t_global = []
+    y_global = []
+    lyap_global = []
+
+    event_triggered = False
+    event_time = None
+    event_state = None
+    event_index = None
+
+    current_time = t0
+
+    while current_time < tfinal:
+        next_time = min(current_time + block_size, tfinal)
+
+        # t_eval apenas dentro do bloco atual
+        mask_block = (time >= current_time) & (time <= next_time)
+        t_eval_block = time[mask_block]
+
+        # garantir pelo menos o ponto final do bloco
+        if t_eval_block.size == 0 or t_eval_block[-1] < next_time:
+            t_eval_block = np.unique(np.append(t_eval_block, next_time))
+
+        sol = solve_ivp(
+            eqmotion_with_lyap,
+            [current_time, next_time],
+            Y_current,
+            t_eval=t_eval_block,
+            method='RK45',
+            rtol=1e-8,
+            atol=1e-8,
+            events=[col1, ejecao, col2, parabolic]
+        )
+
+        # guardar trajetória do bloco
+        t_block = sol.t
+        y_block = sol.y.T  # shape (npts, 8)
+
+        # construir lyap_t bloco a bloco
+        for idx in range(len(t_block)):
+            t_now = t_block[idx]
+            w_now = y_block[idx, 4:8]
+            w_now_norm = safe_norm(w_now)
+
+            if t_now <= 0 or not np.isfinite(w_now_norm) or w_now_norm <= 0:
+                lyap_now = np.nan
+            else:
+                # contribuição acumulada até o início do bloco + crescimento dentro do bloco
+                lyap_now = (log_sum + np.log(w_now_norm / w0_norm)) / t_now
+
+            t_global.append(t_now)
+            y_global.append(y_block[idx])
+            lyap_global.append(lyap_now)
+
+        # checar se houve evento terminal
+        for ievt, tev in enumerate(sol.t_events):
+            if len(tev) > 0:
+                event_triggered = True
+                event_time = tev[0]
+                event_state = sol.y_events[ievt][0]
+                event_index = ievt
+                break
+
+        # se houve evento, encerra
+        if event_triggered:
+            break
+
+        # renormalização do vetor variacional no fim do bloco
+        Y_end = sol.y[:, -1].copy()
+        w_end = Y_end[4:8]
+        w_end_norm = safe_norm(w_end)
+
+        if (not np.isfinite(w_end_norm)) or (w_end_norm <= 0):
+            # Lyapunov inválido daqui em diante
+            XV_end = Y_end[0:4]
+            Y_current = np.concatenate((XV_end, w0))
+        else:
+            log_sum += np.log(w_end_norm / w0_norm)
+            Y_end[4:8] = w_end / w_end_norm * w0_norm
+            Y_current = Y_end
+
+        current_time = next_time
+
+    # converter acumulados para array
+    t = np.array(t_global, dtype=float)
+    Yall = np.array(y_global, dtype=float)
+    lyap_t = np.array(lyap_global, dtype=float)
+
+    x = Yall[:, 0]
+    y = Yall[:, 1]
+    vx = Yall[:, 2]
+    vy = Yall[:, 3]
+
+    # valor final do expoente de Lyapunov
+    lyap_final = lyap_t[-1] if len(lyap_t) > 0 and np.isfinite(lyap_t[-1]) else np.nan
+
+    # identificar tipo de evento
+    col = 0
     collision_string = None
-    
-    if len(tcol)>0:
-        col=1
-        Yc = Ycol[0] 
-        # Usando .format para seguranca
+
+    if event_triggered:
+        xev, yev, vxev, vyev = event_state[0:4]
+
+        # ievt = 0 -> col1
+        # ievt = 1 -> ejecao
+        # ievt = 2 -> col2
+        # ievt = 3 -> parabolic
+        if event_index in [0, 2]:
+            col = 1
+        elif event_index in [1, 3]:
+            col = 2
+
         collision_string = "{} {} {} {} {} {} {} {}\n".format(
-            XV0[0], XV0[3], col, tcol[0], Yc[0], Yc[1], Yc[2], Yc[3]
+            XV0[0], XV0[3], col, event_time, xev, yev, vxev, vyev
         )
-    elif len(tejecao)>0:
-        col=2
-        Ye = Yejecao[0]
-        collision_string = "{} {} {} {} {} {} {} {}\n".format(
-            XV0[0], XV0[3], col, tejecao[0], Ye[0], Ye[1], Ye[2], Ye[3]
-        )
-    elif len(tcol2)>0:
-        col=1
-        Yc = Ycol2[0] 
-        # Usando .format para seguranca
-        collision_string = "{} {} {} {} {} {} {} {}\n".format(
-            XV0[0], XV0[3], col, tcol2[0], Yc[0], Yc[1], Yc[2], Yc[3]
-        )
-    elif len(tejecao2)>0:
-        col=2
-        Ye = Yejecao2[0]
-        collision_string = "{} {} {} {} {} {} {} {}\n".format(
-            XV0[0], XV0[3], col, tejecao2[0], Ye[0], Ye[1], Ye[2], Ye[3]
-        )
-        
-    X,Y,Z,VX,VY,VZ = rotacional_para_inercial(t[-1], x[-1], y[-1], 0, vx[-1], vy[-1], 0, lbd)
-    r_fin = np.linalg.norm([X,Y,Z])
-    v_fin = np.linalg.norm([VX,VY,VZ])
-    h_fin = np.linalg.norm(np.cross([X,Y,Z], [VX,VY,VZ], axis=0))
-    
-    if r_fin == 0: af=0; ef=0
-    elif v_fin == 0: af=r_fin; ef=1.0 
+
+    # estado final para af, ef
+    X, Y, Z, VX, VY, VZ = rotacional_para_inercial(
+        t[-1], x[-1], y[-1], 0.0, vx[-1], vy[-1], 0.0, lbd
+    )
+
+    r_fin = safe_norm([X, Y, Z])
+    v_fin = safe_norm([VX, VY, VZ])
+    h_fin = safe_norm(np.cross([X, Y, Z], [VX, VY, VZ], axis=0))
+
+    if (not np.isfinite(r_fin)) or r_fin == 0:
+        af = np.nan
+        ef = np.nan
+    elif (not np.isfinite(v_fin)) or v_fin == 0:
+        af = r_fin
+        ef = 1.0
     else:
         try:
-            energy = (v_fin**2.) / 2. - 1./r_fin 
-            if energy == 0: af=np.inf; ef=1.0
+            energy = (v_fin**2.) / 2. - 1. / r_fin
+            if not np.isfinite(energy):
+                af = np.nan
+                ef = np.nan
+            elif energy == 0:
+                af = np.inf
+                ef = 1.0
             else:
-                 af = -1. / (2. * energy)
-                 ef_squared = 1 + 2 * energy * h_fin**2.
-                 ef = np.sqrt(ef_squared) if ef_squared >= 0 else -1.0 
+                af = -1. / (2. * energy)
+                ef_squared = 1. + 2. * energy * h_fin**2.
+                ef = np.sqrt(ef_squared) if ef_squared >= 0 else np.nan
         except Exception:
-            af=0; ef=-1 
-    
+            af = np.nan
+            ef = np.nan
+
     full_trajectory_data = np.vstack((t, x, y, vx, vy, lyap_t)).T
 
     return t[-1], col, af, ef, lyap_final, full_trajectory_data, collision_string
@@ -441,10 +558,14 @@ def run_simulation(indices):
     a = a_vec[i]
     e = e_vec[j]
     if distribution==2:
-        a = np.random.uniform(a_init, a_end, 1)[0]
-        e = np.random.uniform(e_init, e_end, 1)[0]
-    delta_a = 0.0  # ou np.nan
-    delta_e = 0.0  # ou np.nan
+        rng = default_rng()
+        a = rng.uniform(a_init, a_end)
+        e = rng.uniform(e_init, e_end)
+#        a = np.random.uniform(a_init, a_end, 1)[0]
+#        e = np.random.uniform(e_init, e_end, 1)[0]
+    delta_a = 100.0  # ou np.nan
+    delta_e = 1.0  # ou np.nan
+    varpi = default_rng().uniform(0.0, 2.*np.pi)
     XYZ = aei_to_xv2(Gn,1.0, mu, [a,e,0.,varpi,0.,0.])
     X0, Y0, Z0, VX0, VY0, VZ0 = XYZ[0]
     x0, y0, z0, vx0, vy0, vz0 = inercial_para_rotacional(0.,X0, Y0, Z0, VX0, VY0, VZ0, lbd)    
@@ -461,7 +582,7 @@ def run_simulation(indices):
 
     # Logica de seguranca e colisao NaN
     try:
-        if x0 > Rn and n > 0:
+        if np.sqrt(x0**2.+y0**2.) > Rn and n > 0:
             XV0 = [x0, y0, vx0, vy0]
             
             tf, col, af, ef, lyap_final, full_trajectory, col_str = orbita(XV0, time)
@@ -478,7 +599,7 @@ def run_simulation(indices):
 
             a_evol = []
             e_evol = []
-            print(a_evol)
+#            print(a_evol)
             # Laço para calcular os elementos orbitais linha por linha
             for k in range(len(t)):
                 xyz_k = [X[k], Y[k], Z[k], VX[k], VY[k], VZ[k]]
@@ -510,14 +631,14 @@ def run_simulation(indices):
         tf = 0.
         col = 1
         af = a; ef = e
-        delta_a = 0.
-        delta_e = 0.
+        delta_a = 100.0
+        delta_e = 1.0
         lyap_final = np.nan
         print_string = f"Erro em a={a:.4f} e={e:.4f}: {ex}"
 
     # Formatacao segura
-    particle_string = "{:.6f} {:.6f} {:.4f} {} {:.6f} {:.6f} {:.6e} {:.6f} {:.6e}\n".format(
-        a, e, tf, int(col), af, ef, lyap_final, delta_a, delta_e
+    particle_string = "{:.6f} {:.6f} {:.4f} {} {:.6f} {:.6f} {:.6e} {:.6f} {:.6e} {:.6e}\n".format(
+        a, e, varpi*180./np.pi, tf, int(col), af, ef, 1./lyap_final, delta_a, delta_e
     )
     
     # Reduzindo prints para nao lotar log do cluster
@@ -569,11 +690,11 @@ if __name__ == "__main__":
     # --- PASSO 2: Preparar arquivos ---
     # Se for 'w' (começar do zero), escreve o cabeçalho.
     # Se for 'a' (resumir), não escreve cabeçalho de novo.
-    if mode == 'w':
-        with open(file_part, "w", encoding='utf-8') as s:
-            s.write("# a e tf col af ef lyapunov_final\n")
-        with open(file_col, 'w', encoding='utf-8') as f:
-            pass # Limpa arquivo de colisão
+#    if mode == 'w':
+#        with open(file_part, "w", encoding='utf-8') as s:
+#            s.write("# a e tf col af ef lyapunov_final\n")
+#        with open(file_col, 'w', encoding='utf-8') as f:
+#            pass # Limpa arquivo de colisão
 
     # --- PASSO 3: Filtrar o Grid ---
     full_indices_grid = list(product(range(Npart), range(Npart)))
@@ -593,6 +714,8 @@ if __name__ == "__main__":
         num_cpus = int(os.environ['PBS_NP'])
     except KeyError:
         num_cpus = mp.cpu_count()
+
+    num_cpus = 15
 
     total_tasks = len(tasks_to_run)
     
@@ -621,7 +744,7 @@ if __name__ == "__main__":
                 f_col.flush()
                 
                 count += 1
-                if count % 10 == 0: # Feedback mais frequente para teste
-                    print(f"Progresso atual: {count}/{total_tasks} (Total acumulado: {len(processed_pairs)+count})")
+                if count % num_cpus == 0: # Feedback mais frequente para teste
+                    print(f"Progresso atual: {count}/{total_tasks}")
         
         print(f"Simulacao concluida!")
